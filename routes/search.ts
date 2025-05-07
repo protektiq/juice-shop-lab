@@ -20,8 +20,18 @@ module.exports = function searchProducts () {
   return (req: Request, res: Response, next: NextFunction) => {
     let criteria: any = req.query.q === 'undefined' ? '' : req.query.q ?? ''
     criteria = (criteria.length <= 200) ? criteria : criteria.substring(0, 200)
-    models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge
-      .then(([products]: any) => {
+
+    // FIX: Use parameterized query (replacements) to prevent SQL injection
+    models.sequelize.query(
+      `SELECT * FROM Products WHERE ((name LIKE :criteria OR description LIKE :criteria) AND deletedAt IS NULL) ORDER BY name`,
+      {
+        replacements: { criteria: `%${criteria}%` }, // Pass criteria as a replacement
+        type: models.sequelize.QueryTypes.SELECT // Specify query type for raw queries if needed, though with model methods it's often inferred
+      }
+    ) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge
+      .then((products: any) => { // Sequelize's raw query `then` typically returns [results, metadata]
+                                 // If you are expecting direct results, ensure your Sequelize version/config supports this
+                                 // or adjust to products = results;
         const dataString = JSON.stringify(products)
         if (challengeUtils.notSolved(challenges.unionSqlInjectionChallenge)) { // vuln-code-snippet hide-start
           let solved = true
@@ -44,7 +54,7 @@ module.exports = function searchProducts () {
         }
         if (challengeUtils.notSolved(challenges.dbSchemaChallenge)) {
           let solved = true
-          void models.sequelize.query('SELECT sql FROM sqlite_master').then(([data]: any) => {
+          void models.sequelize.query('SELECT sql FROM sqlite_master').then(([data]: any) => { // Assuming this query is safe and internal
             const tableDefinitions = utils.queryResultToJson(data)
             if (tableDefinitions.data?.length) {
               for (let i = 0; i < tableDefinitions.data.length; i++) {
@@ -67,7 +77,10 @@ module.exports = function searchProducts () {
         }
         res.json(utils.queryResultToJson(products))
       }).catch((error: ErrorWithParent) => {
-        next(error.parent)
+        // It's good practice to handle potential errors from the query
+        // next(error.parent) might be specific to how errors were wrapped,
+        // ensure this is the desired behavior or use next(error)
+        next(error.parent || error)
       })
   }
 }
