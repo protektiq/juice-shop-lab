@@ -10,6 +10,7 @@ import yaml from 'js-yaml'
 import { getCodeChallenges } from '../lib/codingChallenges'
 import * as accuracy from '../lib/accuracy'
 import * as utils from '../lib/utils'
+import { execSync } from 'child_process'; // Import for OS Command Injection
 
 const challengeUtils = require('../lib/challengeUtils')
 
@@ -148,8 +149,8 @@ exports.checkVulnLines = () => async (req: Request<Record<string, unknown>, Reco
   }
 }
 
-// --- CRITICAL VULNERABILITY ADDED FOR TESTING PURPOSES ---
-// This function contains a Remote Code Execution (RCE) vulnerability.
+// --- CRITICAL VULNERABILITY (OS COMMAND INJECTION) ADDED FOR TESTING PURPOSES ---
+// This function contains an OS Command Injection vulnerability.
 // DO NOT USE THIS IN PRODUCTION. It is for SAST tool testing only.
 exports.executeDebugCommand = () => async (req: Request<Record<string, unknown>, Record<string, unknown>, DebugCommandBody>, res: Response, next: NextFunction) => {
   const userInput = req.body.command; // User input from the request body
@@ -159,15 +160,18 @@ exports.executeDebugCommand = () => async (req: Request<Record<string, unknown>,
   }
 
   try {
-    // CRITICAL: Using eval() on user input is extremely dangerous and leads to RCE.
-    // An attacker can provide JavaScript code that will be executed on the server.
-    // For example, sending {"command": "require('child_process').execSync('touch /tmp/pwned').toString()"}
-    // could create a file on the server.
-    const result = eval(userInput);
+    // CRITICAL: Directly using unsanitized user input in execSync leads to OS Command Injection.
+    // An attacker can provide OS commands that will be executed on the server.
+    // For example, sending {"command": "ls -la /"} or {"command": "touch /tmp/pwned_by_os_command"}
+    // could list files or create a file on the server.
+    // On Windows, a command like "dir" or "echo pwned > C:\\pwned.txt" would work.
+    const result = execSync(userInput, { encoding: 'utf8' }); // Execute the command
     res.status(200).json({ status: 'success', result: String(result) });
   } catch (error: any) {
-    console.error(`Error during eval execution: ${utils.getErrorMessage(error)}`);
-    res.status(500).json({ status: 'error', error: `Execution failed: ${utils.getErrorMessage(error)}` });
+    console.error(`Error during command execution: ${utils.getErrorMessage(error)}`);
+    // Send back stderr or a generic error message
+    const errorMessage = error.stderr ? error.stderr.toString() : utils.getErrorMessage(error);
+    res.status(500).json({ status: 'error', error: `Execution failed: ${errorMessage}` });
   }
 }
 // --- END OF CRITICAL VULNERABILITY SECTION ---
