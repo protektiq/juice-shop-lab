@@ -4,5 +4,31 @@ services:
     links:
       - app
   app:
-    image: bkimminich/juice-shop:latest
-    build: ./
+    # FIX: Pin to a specific image version instead of 'latest'
+    # Replace v16.0.0 with the specific, audited version you intend to use.
+    image: bkimminich/juice-shop:v16.0.0
+    build: ./ # This build context might be overridden by the 'image' directive if the image is found.
+              # If you intend to always build locally, ensure your Dockerfile also specifies a non-root user.
+    # FIX: Add user directive to run the container as a non-root user.
+    # The bkimminich/juice-shop image provides a 'node' user (UID 1000).
+    user: "node" # or "1000:1000" if you prefer UID/GID
+    # It's also good practice to drop unnecessary capabilities if possible,
+    # though this depends on the application's needs.
+    # cap_drop:
+    #   - ALL
+    # cap_add:
+    #   - CHOWN # Example: only add capabilities the app truly needs
+    # read_only: true # If the container filesystem doesn't need to be writable
+
+# It's good practice to define networks explicitly for better isolation,
+# though not strictly related to the identified vulnerability.
+# networks:
+#  app_net:
+
+# And assign services to networks:
+# sut:
+#   networks:
+#     - app_net
+# app:
+#   networks:
+#     - app_net
