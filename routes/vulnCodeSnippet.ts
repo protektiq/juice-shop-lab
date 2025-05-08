@@ -5,6 +5,7 @@
 
 import { type NextFunction, type Request, type Response } from 'express'
 import fs from 'fs'
+import path from 'path' // Added for path manipulation
 import yaml from 'js-yaml'
 import { getCodeChallenges } from '../lib/codingChallenges'
 import * as accuracy from '../lib/accuracy'
@@ -19,6 +20,11 @@ interface SnippetRequestBody {
 interface VerdictRequestBody {
   selectedLines: number[]
   key: string
+}
+
+// Interface for the new RCE vulnerable function
+interface DebugCommandBody {
+  command: string
 }
 
 const setStatusCode = (error: any) => {
@@ -90,31 +96,78 @@ exports.checkVulnLines = () => async (req: Request<Record<string, unknown>, Reco
   const selectedLines: number[] = req.body.selectedLines
   const verdict = getVerdict(vulnLines, neutralLines, selectedLines)
   let hint
-  if (fs.existsSync('./data/static/codefixes/' + key + '.info.yml')) {
-    const codingChallengeInfos = yaml.load(fs.readFileSync('./data/static/codefixes/' + key + '.info.yml', 'utf8'))
-    if (codingChallengeInfos?.hints) {
-      if (accuracy.getFindItAttempts(key) > codingChallengeInfos.hints.length) {
-        if (vulnLines.length === 1) {
-          hint = res.__('Line {{vulnLine}} is responsible for this vulnerability or security flaw. Select it and submit to proceed.', { vulnLine: vulnLines[0].toString() })
-        } else {
-          hint = res.__('Lines {{vulnLines}} are responsible for this vulnerability or security flaw. Select them and submit to proceed.', { vulnLines: vulnLines.toString() })
+
+  // --- Fix for Directory Traversal ---
+  // Define the base directory for codefixes to prevent escape
+  const baseDir = path.resolve('./data/static/codefixes/')
+  // Sanitize the key: remove any non-alphanumeric characters (except hyphen and underscore for typical keys)
+  // This is a basic sanitization. A stricter allow-list for 'key' characters is even better.
+  const sanitizedKey = key.replace(/[^a-zA-Z0-9_-]/g, '')
+  const filePath = path.resolve(baseDir, sanitizedKey + '.info.yml')
+
+  // Check if the resolved path is still within the base directory
+  if (filePath.startsWith(baseDir + path.sep)) {
+    if (fs.existsSync(filePath)) {
+      try {
+        const codingChallengeInfos = yaml.load(fs.readFileSync(filePath, 'utf8')) as any // Type assertion for safety
+        if (codingChallengeInfos?.hints) {
+          if (accuracy.getFindItAttempts(key) > codingChallengeInfos.hints.length) {
+            if (vulnLines.length === 1) {
+              hint = res.__('Line {{vulnLine}} is responsible for this vulnerability or security flaw. Select it and submit to proceed.', { vulnLine: vulnLines[0].toString() })
+            } else {
+              hint = res.__('Lines {{vulnLines}} are responsible for this vulnerability or security flaw. Select them and submit to proceed.', { vulnLines: vulnLines.toString() })
+            }
+          } else {
+            const nextHint = codingChallengeInfos.hints[accuracy.getFindItAttempts(key) - 1] // -1 prevents after first attempt
+            if (nextHint) hint = res.__(nextHint)
+          }
         }
-      } else {
-        const nextHint = codingChallengeInfos.hints[accuracy.getFindItAttempts(key) - 1] // -1 prevents after first attempt
-        if (nextHint) hint = res.__(nextHint)
+      } catch (fileReadError) {
+        console.error("Error reading or parsing YAML file:", fileReadError);
+        // Decide how to handle this error, e.g., log it, set a default hint, or return an error response
       }
     }
+  } else {
+    // Log potential path traversal attempt or handle as an error
+    console.warn(`Potential directory traversal attempt with key: ${key}, resolved to: ${filePath}`)
+    // Optionally, you could set a generic hint or error here
   }
+  // --- End of Directory Traversal Fix ---
+
   if (verdict) {
-    await challengeUtils.solveFindIt(key)
+    await challengeUtils.solveFindIt(key) // Assuming key is safe here due to earlier sanitization for file path
     res.status(200).json({
       verdict: true
     })
   } else {
-    accuracy.storeFindItVerdict(key, false)
+    accuracy.storeFindItVerdict(key, false) // Assuming key is safe here
     res.status(200).json({
       verdict: false,
       hint
     })
   }
 }
+
+// --- CRITICAL VULNERABILITY ADDED FOR TESTING PURPOSES ---
+// This function contains a Remote Code Execution (RCE) vulnerability.
+// DO NOT USE THIS IN PRODUCTION. It is for SAST tool testing only.
+exports.executeDebugCommand = () => async (req: Request<Record<string, unknown>, Record<string, unknown>, DebugCommandBody>, res: Response, next: NextFunction) => {
+  const userInput = req.body.command; // User input from the request body
+
+  if (!userInput || typeof userInput !== 'string') {
+    return res.status(400).json({ status: 'error', error: 'Invalid command input.' });
+  }
+
+  try {
+    // CRITICAL: Using eval() on user input is extremely dangerous and leads to RCE.
+    // An attacker can provide JavaScript code that will be executed on the server.
+    // For example, sending {"command": "require('child_process').execSync('touch /tmp/pwned').toString()"}
+    // could create a file on the server.
+    const result = eval(userInput);
+    res.status(200).json({ status: 'success', result: String(result) });
+  } catch (error: any) {
+    console.error(`Error during eval execution: ${utils.getErrorMessage(error)}`);
+    res.status(500).json({ status: 'error', error: `Execution failed: ${utils.getErrorMessage(error)}` });
+  }
+}
+// --- END OF CRITICAL VULNERABILITY SECTION ---
