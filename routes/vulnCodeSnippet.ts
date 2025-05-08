@@ -10,7 +10,7 @@ import yaml from 'js-yaml'
 import { getCodeChallenges } from '../lib/codingChallenges'
 import * as accuracy from '../lib/accuracy'
 import * as utils from '../lib/utils'
-import { execSync } from 'child_process'; // Import for OS Command Injection
+import { execFileSync } from 'child_process'; // Changed from execSync to execFileSync for safer execution of specific commands
 
 const challengeUtils = require('../lib/challengeUtils')
 
@@ -23,9 +23,10 @@ interface VerdictRequestBody {
   key: string
 }
 
-// Interface for the new RCE vulnerable function
 interface DebugCommandBody {
   command: string
+  // Potentially add args if your commands need them, and handle them safely
+  // args?: string[]
 }
 
 const setStatusCode = (error: any) => {
@@ -99,18 +100,14 @@ exports.checkVulnLines = () => async (req: Request<Record<string, unknown>, Reco
   let hint
 
   // --- Fix for Directory Traversal ---
-  // Define the base directory for codefixes to prevent escape
   const baseDir = path.resolve('./data/static/codefixes/')
-  // Sanitize the key: remove any non-alphanumeric characters (except hyphen and underscore for typical keys)
-  // This is a basic sanitization. A stricter allow-list for 'key' characters is even better.
   const sanitizedKey = key.replace(/[^a-zA-Z0-9_-]/g, '')
   const filePath = path.resolve(baseDir, sanitizedKey + '.info.yml')
 
-  // Check if the resolved path is still within the base directory
   if (filePath.startsWith(baseDir + path.sep)) {
     if (fs.existsSync(filePath)) {
       try {
-        const codingChallengeInfos = yaml.load(fs.readFileSync(filePath, 'utf8')) as any // Type assertion for safety
+        const codingChallengeInfos = yaml.load(fs.readFileSync(filePath, 'utf8')) as any
         if (codingChallengeInfos?.hints) {
           if (accuracy.getFindItAttempts(key) > codingChallengeInfos.hints.length) {
             if (vulnLines.length === 1) {
@@ -119,29 +116,26 @@ exports.checkVulnLines = () => async (req: Request<Record<string, unknown>, Reco
               hint = res.__('Lines {{vulnLines}} are responsible for this vulnerability or security flaw. Select them and submit to proceed.', { vulnLines: vulnLines.toString() })
             }
           } else {
-            const nextHint = codingChallengeInfos.hints[accuracy.getFindItAttempts(key) - 1] // -1 prevents after first attempt
+            const nextHint = codingChallengeInfos.hints[accuracy.getFindItAttempts(key) - 1]
             if (nextHint) hint = res.__(nextHint)
           }
         }
       } catch (fileReadError) {
         console.error("Error reading or parsing YAML file:", fileReadError);
-        // Decide how to handle this error, e.g., log it, set a default hint, or return an error response
       }
     }
   } else {
-    // Log potential path traversal attempt or handle as an error
     console.warn(`Potential directory traversal attempt with key: ${key}, resolved to: ${filePath}`)
-    // Optionally, you could set a generic hint or error here
   }
   // --- End of Directory Traversal Fix ---
 
   if (verdict) {
-    await challengeUtils.solveFindIt(key) // Assuming key is safe here due to earlier sanitization for file path
+    await challengeUtils.solveFindIt(key)
     res.status(200).json({
       verdict: true
     })
   } else {
-    accuracy.storeFindItVerdict(key, false) // Assuming key is safe here
+    accuracy.storeFindItVerdict(key, false)
     res.status(200).json({
       verdict: false,
       hint
@@ -149,29 +143,41 @@ exports.checkVulnLines = () => async (req: Request<Record<string, unknown>, Reco
   }
 }
 
-// --- CRITICAL VULNERABILITY (OS COMMAND INJECTION) ADDED FOR TESTING PURPOSES ---
-// This function contains an OS Command Injection vulnerability.
-// DO NOT USE THIS IN PRODUCTION. It is for SAST tool testing only.
+// --- OS COMMAND INJECTION VULNERABILITY FIXED ---
+// The function now only allows a predefined set of safe commands.
 exports.executeDebugCommand = () => async (req: Request<Record<string, unknown>, Record<string, unknown>, DebugCommandBody>, res: Response, next: NextFunction) => {
-  const userInput = req.body.command; // User input from the request body
+  const userInput = req.body.command;
 
   if (!userInput || typeof userInput !== 'string') {
     return res.status(400).json({ status: 'error', error: 'Invalid command input.' });
   }
 
-  try {
-    // CRITICAL: Directly using unsanitized user input in execSync leads to OS Command Injection.
-    // An attacker can provide OS commands that will be executed on the server.
-    // For example, sending {"command": "ls -la /"} or {"command": "touch /tmp/pwned_by_os_command"}
-    // could list files or create a file on the server.
-    // On Windows, a command like "dir" or "echo pwned > C:\\pwned.txt" would work.
-    const result = execSync(userInput, { encoding: 'utf8' }); // Execute the command
-    res.status(200).json({ status: 'success', result: String(result) });
-  } catch (error: any) {
-    console.error(`Error during command execution: ${utils.getErrorMessage(error)}`);
-    // Send back stderr or a generic error message
-    const errorMessage = error.stderr ? error.stderr.toString() : utils.getErrorMessage(error);
-    res.status(500).json({ status: 'error', error: `Execution failed: ${errorMessage}` });
+  // Define an allow-list of safe commands and their actual executable paths/arguments
+  // This is crucial for security. Only whitelisted commands are permitted.
+  const allowedCommands: { [key: string]: { command: string, args: string[] } } = {
+    'list-files-current-dir': { command: 'ls', args: ['-la'] }, // Example for Linux/macOS
+    'show-date': { command: 'date', args: [] },
+    // Add more safe, predefined commands here.
+    // For Windows, you might have:
+    // 'list-files-current-dir-win': { command: 'cmd', args: ['/c', 'dir'] },
+    // 'show-date-win': { command: 'cmd', args: ['/c', 'date', '/T'] }
+  };
+
+  if (allowedCommands.hasOwnProperty(userInput)) {
+    const cmdDetails = allowedCommands[userInput];
+    try {
+      // Use execFileSync for synchronous execution without shell interpolation.
+      // The command and arguments are passed separately.
+      const result = execFileSync(cmdDetails.command, cmdDetails.args, { encoding: 'utf8', timeout: 5000 }); // Added timeout
+      res.status(200).json({ status: 'success', result: String(result).trim() });
+    } catch (error: any) {
+      console.error(`Error during command execution: ${utils.getErrorMessage(error)}`);
+      const errorMessage = error.stderr ? error.stderr.toString() : (error.stdout ? error.stdout.toString() : utils.getErrorMessage(error));
+      res.status(500).json({ status: 'error', error: `Execution failed: ${errorMessage.trim()}` });
+    }
+  } else {
+    // If the command is not in the allow-list, reject it.
+    res.status(403).json({ status: 'error', error: 'Command not allowed.' });
   }
 }
-// --- END OF CRITICAL VULNERABILITY SECTION ---
+// --- END OF FIXED SECTION ---
