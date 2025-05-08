@@ -1,7 +1,16 @@
-FROM alpine
+FROM node:18
 
-RUN apk add curl
+# Set working directory
+WORKDIR /app
 
-COPY smoke-test.sh smoke-test.sh
+# Copy all files
+COPY . .
 
-CMD ["sh", "smoke-test.sh", "http://app:3000"]
+# Install dependencies
+RUN npm install
+
+# Expose the port Juice Shop runs on
+EXPOSE 3000
+
+# Start the app
+CMD ["npm", "start"]
